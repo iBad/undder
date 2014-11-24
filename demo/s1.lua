@@ -13,7 +13,7 @@ local function CreateScene(group, params, scene)
 
 	local function MarkPath(obj, color)
 		if (obj.pathLine == nil) then
-			obj.pathLine = display.newLine(obj.storedX, obj.storedY, obj.x, obj.y);
+			obj.pathLine = display.newLine(obj.parent, obj.storedX, obj.storedY, obj.x, obj.y);
 			obj.pathLine:setStrokeColor(unpack(color));
 			obj.pathLine.strokeWidth = 5;
 		else
@@ -33,12 +33,13 @@ local function CreateScene(group, params, scene)
 						.Stroke(5, strokes[i])
 						.Fill(fills[i])
 						.Center()
+						.InsertInto(group)
 						.SetMark()
 						.StoreXY()
 						.Wait(30)
 						.TMoveByFn(GetXY, { time = 30 })
 						.MarkPath(fills[i])
-						.GotoMark();
+						.GotoMark()
 	end
 
 end
@@ -53,5 +54,12 @@ function scene:create( event )
 end
 
 
+function scene:destroy( event )
+    local sceneGroup = self.view
+	__().Destroy(sceneGroup);
+end
+
+
 scene:addEventListener("create", scene);
+scene:addEventListener("destroy", scene);
 return scene;

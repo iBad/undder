@@ -9,6 +9,7 @@ local UndderAdmin = {
 
 
 
+
 function __(obj, ...)
 	if (obj == nil) then
 		return UndderAdmin;
@@ -19,43 +20,46 @@ function __(obj, ...)
 		local args = {...};
 
 		if (UndderConfig.Constructors[constr] ~= nil) then
-			return __(UndderConfig.Constructors[constr](unpack(args)));
+			return __(UndderConfig.Constructors[constr].create(unpack(args)));
 		end
 		print("Error no constructor for '" .. constr .. "'");
 		return nil;
 	end
 
 
-	if (obj._isWrapped) then
+	if (obj.__isWrapped) then
 		return obj;
 	end
 
 
+	UndderConfig.Index = (UndderConfig.Index or 0) + 1;
+	obj.__undderID = UndderConfig.Index;
+	obj.__destructors = {};
+
 	local wrap = {
 		Raw = obj,
 
-		_isWrapped = true,
-
-		_callQueue = {},
-		_isTransitioning = false,
-		_mark = nil,
+		__isWrapped = true,
+		__isTransitioning = false,
+		__mark = nil,
+		__callQueue = {}
 	};
 
 
 	wrap.StartTransition = function()
-		wrap._isTransitioning = true;
+		wrap.__isTransitioning = true;
 
-		if (wrap._mark) then
-			wrap._mark.hadTransition = true;
+		if (wrap.__mark) then
+			wrap.__mark.hadTransition = true;
 		end
 	end
 
 	wrap.EndTransition = function()
-		wrap._isTransitioning = false;
+		wrap.__isTransitioning = false;
 
-		local queue = wrap._callQueue;
+		local queue = wrap.__callQueue;
 
-		wrap._callQueue = {};
+		wrap.__callQueue = {};
 
 		while (#queue > 0) do
 			local action = table.remove(queue, 1);
@@ -75,22 +79,26 @@ function __(obj, ...)
 
 			if (UndderConfig.Functions[k] ~= nil) then
 				return function(...) 
-					if (t._isTransitioning) then
-						table.insert(t._callQueue, {
+
+					if (t.__isTransitioning) then
+						table.insert(t.__callQueue, {
 							func = k,
 							this = t,
 							args = {...}
 						});
 					else
-						if (t._mark) then
-							table.insert(t._mark.actions, {
+						-- Do not add functionns which are called inside other functions
+						if (t.__mark) and (not t._insideCall) then 
+							table.insert(t.__mark.actions, {
 								func = k,
 								this = t,
 								args = {...}
 							});
 						end
 
+						t._insideCall = true;
 						UndderConfig.Functions[k](t, ...);
+						t._insideCall = false;
 					end
 
 					return t;
@@ -134,15 +142,56 @@ function UndderAdmin.AddFunction(name, callback)
 end
 
 
-function UndderAdmin.AddConstructor(name, callback)
+function UndderAdmin.AddConstructor(name, callback, beforDestroy)
 	name = name:lower();
 	if (UndderConfig.Constructors[name] ~= nil) then
 		print("Error constructor for '" .. name .. "' is already registered");
 		return false;
 	end
-	UndderConfig.Constructors[name] = callback;
+
+	UndderConfig.Constructors[name] = {
+		create = callback,
+		destroy = beforDestroy
+	};
+
 end
 
+function UndderAdmin.GetTransitionTag(group)
+	if not(group.__undderID) then
+		return nil;
+	end
+	return "__unddreTransition_" .. group.__undderID;
+end
+
+function UndderAdmin.Destroy(object)
+	if (object.numChildren) then
+		for i = 1, object.numChildren do
+			UndderAdmin.Destroy(object[i]);
+		end
+	end
+
+	local transitionTag = UndderAdmin.GetTransitionTag(object);
+	if (transitionTag) then
+		print("Destroying " .. transitionTag);
+		transition.pause(transitionTag);
+		transition.cancel(transitionTag);
+	end
+
+	if (object.__isWrapped) then
+		object.__mark = nil;
+		object.__callQueue = {};
+	end
+
+	if (object.__timerId) then
+		timer.cancel(object.__timerId);
+	end
+
+	if (object.__destructors) then
+		for k, v in pairs(object.__destructors) do
+			v();
+		end 
+	end
+end
 
 
 
@@ -152,7 +201,7 @@ end
 ----------------------------------------------------------------------
 
 UndderConfig.Functions.SetMark = function(obj)
-	obj._mark = {
+	obj.__mark = {
 		hadTransition = false,
 		actions = {}
 	};
@@ -160,18 +209,18 @@ end
 
 
 UndderConfig.Functions.GotoMark = function(obj)
-	if (obj._mark == nil) then
+	if (obj.__mark == nil) then
 		print("Error: You should call SetMark first");
 		return;
 	end
 
-	if (obj._mark.hadTransition == false) then
+	if (obj.__mark.hadTransition == false) then
 		print("Error: There was no transition in between SetMark and GotoMark. This will cause infinite loop.");
 		return;
 	end
 
-	obj._callQueue = obj._mark.actions;
-	obj._mark = nil;
+	obj.__callQueue = obj.__mark.actions;
+	obj.__mark = nil;
 	obj.SetMark();
 
 	obj.EndTransition();
@@ -182,34 +231,44 @@ end
 -- Constructors
 ----------------------------------------------------------------------
 
-UndderConfig.Constructors.circle = function(radius)
-	return display.newCircle(0, 0, radius);
-end
-
-UndderConfig.Constructors.rect = function(width, height)
-	return display.newRect(0, 0, width, height);
-end
-
-
-UndderConfig.Constructors.text = function(text, font, fontSize, options)
-	options = options or {};
-	options.text = text;
-	options.font = font;
-	options.fontSize = fontSize;
-	return display.newText(options);
-end
-
-UndderConfig.Constructors.group = function(anchorChildren, ...)
-	local group = display.newGroup();
-	group.anchorChildren = anchorChildren;
-	
-	local objects = {...};
-
-	for i = 1, #objects do
-		group:insert(objects[i].Raw);
+UndderConfig.Constructors.circle = {
+	create = function(radius)
+		return display.newCircle(0, 0, radius);
 	end
-	return group;
-end
+};
+
+
+
+UndderConfig.Constructors.rect = {
+	create = function(width, height)
+		return display.newRect(0, 0, width, height);
+	end
+};
+
+
+UndderConfig.Constructors.text = {
+	create = function(text, font, fontSize, options)
+		options = options or {};
+		options.text = text;
+		options.font = font;
+		options.fontSize = fontSize;
+		return display.newText(options);
+	end
+};
+
+UndderConfig.Constructors.group = {
+	create = function(anchorChildren, ...)
+		local group = display.newGroup();
+		group.anchorChildren = anchorChildren;
+		
+		local objects = {...};
+
+		for i = 1, #objects do
+			group:insert(objects[i].Raw);
+		end
+		return group;
+	end
+};
 
 
 
@@ -268,7 +327,7 @@ end
 -- Group functions
 ----------------------------------------------------------------------
 UndderConfig.Functions.InsertInto = function(obj, parent)
-	if (parent._isWrapped) then
+	if (parent.__isWrapped) then
 		parent.Raw:insert(obj.Raw);
 	else
 		parent:insert(obj.Raw);
@@ -367,6 +426,8 @@ UndderConfig.Functions.TMoveBy = function(obj, dx, dy, options)
 	obj.StartTransition();
 
 	options = options or {};
+	options.tag = UndderAdmin.GetTransitionTag(obj);
+
 	options.x, options.y = obj.Raw.x + dx, obj.Raw.y + dy;
 	options.onComplete = function()
 		obj.EndTransition();
@@ -380,6 +441,8 @@ UndderConfig.Functions.TMoveByFn = function(obj, xyfunc, options)
 	obj.StartTransition();
 
 	options = options or {};
+	options.tag = UndderAdmin.GetTransitionTag(obj);
+	
 	options.x, options.y = obj.Raw.x + dx, obj.Raw.y + dy;
 	options.onComplete = function()
 		obj.EndTransition();
@@ -392,7 +455,8 @@ end
 
 UndderConfig.Functions.Wait = function(obj, time)
 	obj.StartTransition();
-	timer.performWithDelay(time, function()
+	obj.__timerId = timer.performWithDelay(time, function()
+		obj.__timerId = nil;
 		obj.EndTransition();
 	end);
 end
